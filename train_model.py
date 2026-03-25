@@ -98,3 +98,15 @@ if __name__ == "__main__":
     for vb in voorbeelden:
         p = voorspel_hulpdienst(vb["rssi"], vb["kanalen"], vb["var"], vb["trend"], vb["snelheid"], vb["freq"])
         print(f"  {vb['naam']:<20} P(hulpdienst) = {p:.4f}")
+
+print("\n── Voorspellingen op testdata ──")
+kansen = model.predict_proba(X_test)[:, 1]
+resultaten = pd.DataFrame({
+    "rssi":             X_test[:, 0],
+    "actieve_kanalen":  X_test[:, 1],
+    "snelheid":         X_test[:, 4],
+    "echt_label":       y_test,
+    "P(hulpdienst)":    kansen.round(4),
+    "voorspelling":     (kansen > 0.5).astype(int)
+})
+print(resultaten.to_string())
