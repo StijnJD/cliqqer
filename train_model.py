@@ -3,24 +3,25 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
-FEATURES = ["rssi", "actieve_kanalen", "rssi_variantie", "rssi_trend", "snelheid"]
+FEATURES = ["rssi", "actieve_kanalen", "rssi_variantie", "rssi_trend", "snelheid", "kanaal_freq"]
+
+HULPDIENSTEN = {"politie", "ambulance", "brandweer"}
 
 # ── Data laden ────────────────────────────────────────────────────────────────
 df = pd.read_csv("tetra_simulatie.csv")
 
-X = df[FEATURES].values
-y = df["label"].values
+df["is_hulpdienst"] = df["label"].str.lower().isin(HULPDIENSTEN).astype(int)
 
-le = LabelEncoder()
-y_enc = le.fit_transform(y)
+X = df[FEATURES].values
+y = df["is_hulpdienst"].values
 
 # ── Train/test split 80/20 ────────────────────────────────────────────────────
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y_enc, test_size=0.2, random_state=42, stratify=y_enc
+    X, y, test_size=0.2, random_state=42, stratify=y
 )
 
 # ── Model trainen ─────────────────────────────────────────────────────────────
@@ -33,27 +34,30 @@ model.fit(X_train, y_train)
 # ── Evaluatie ─────────────────────────────────────────────────────────────────
 y_pred = model.predict(X_test)
 
-print(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}\n")
-print("Classification Report:")
-print(classification_report(y_test, y_pred, target_names=le.classes_))
-print("Confusion Matrix:")
+print(f"Accuracy:  {accuracy_score(y_test, y_pred):.4f}")
+print(f"Precision: {precision_score(y_test, y_pred):.4f}")
+print(f"Recall:    {recall_score(y_test, y_pred):.4f}")
+print(f"F1-score:  {f1_score(y_test, y_pred):.4f}")
+print("\nConfusion Matrix:")
 cm = confusion_matrix(y_test, y_pred)
-cm_df = pd.DataFrame(cm, index=le.classes_, columns=le.classes_)
+cm_df = pd.DataFrame(cm,
+                     index=["basisstation", "hulpdienst"],
+                     columns=["pred_basisstation", "pred_hulpdienst"])
 print(cm_df)
 
 # ── Model opslaan ─────────────────────────────────────────────────────────────
 with open("model.pkl", "wb") as f:
-    pickle.dump({"model": model, "label_encoder": le, "features": FEATURES}, f)
+    pickle.dump({"model": model, "features": FEATURES}, f)
 
 print("\nModel opgeslagen als model.pkl")
 
 
 # ── Voorspelfunctie ───────────────────────────────────────────────────────────
-def voorspel_kansen(rssi: float, actieve_kanalen: int, rssi_variantie: float,
-                    rssi_trend: float, snelheid: float,
-                    model_path: str = "model.pkl") -> dict:
+def voorspel_hulpdienst(rssi: float, actieve_kanalen: int, rssi_variantie: float,
+                        rssi_trend: float, snelheid: float, kanaal_freq: float,
+                        model_path: str = "model.pkl") -> float:
     """
-    Geeft de kans per klasse terug als dictionary.
+    Geeft P(hulpdienst) terug als een getal tussen 0 en 1.
 
     Parameters
     ----------
@@ -62,25 +66,22 @@ def voorspel_kansen(rssi: float, actieve_kanalen: int, rssi_variantie: float,
     rssi_variantie   : variantie van de RSSI
     rssi_trend       : trend in de RSSI (dBm/s)
     snelheid         : rijsnelheid in km/h
+    kanaal_freq      : kanalfrequentie in MHz
     model_path       : pad naar het opgeslagen model (model.pkl)
 
     Returns
     -------
-    dict  {klasse: kans, ...}  gesorteerd op aflopende kans
+    float  kans dat het signaal afkomstig is van een hulpdienst (0.0 – 1.0)
     """
     with open(model_path, "rb") as f:
         payload = pickle.load(f)
 
     clf = payload["model"]
-    enc = payload["label_encoder"]
 
-    X_nieuw = np.array([[rssi, actieve_kanalen, rssi_variantie, rssi_trend, snelheid]])
-    kansen  = clf.predict_proba(X_nieuw)[0]
+    X_nieuw = np.array([[rssi, actieve_kanalen, rssi_variantie, rssi_trend, snelheid, kanaal_freq]])
+    kans = clf.predict_proba(X_nieuw)[0][1]
 
-    resultaat = {klasse: round(float(kans), 4)
-                 for klasse, kans in zip(enc.classes_, kansen)}
-
-    return dict(sorted(resultaat.items(), key=lambda x: x[1], reverse=True))
+    return round(float(kans), 4)
 
 
 # ── Demonstratie ──────────────────────────────────────────────────────────────
@@ -88,14 +89,12 @@ if __name__ == "__main__":
     print("\n── Voorbeeldvoorspelling ──")
 
     voorbeelden = [
-        {"naam": "Basisstation",  "rssi": -65, "kanalen": 15, "var": 1.2,  "trend": 0.05, "snelheid": 0},
-        {"naam": "Politievoertuig", "rssi": -88, "kanalen": 2, "var": 14.5, "trend": 1.1,  "snelheid": 110},
-        {"naam": "Ambulance",     "rssi": -81, "kanalen": 2, "var": 10.3, "trend": 0.6,  "snelheid": 75},
-        {"naam": "Brandweer",     "rssi": -83, "kanalen": 3, "var": 8.7,  "trend": 0.4,  "snelheid": 55},
+        {"naam": "Basisstation",    "rssi": -65, "kanalen": 15, "var": 1.2,  "trend": 0.05, "snelheid": 0,   "freq": 380.0},
+        {"naam": "Politievoertuig", "rssi": -88, "kanalen": 2,  "var": 14.5, "trend": 1.1,  "snelheid": 110, "freq": 391.5},
+        {"naam": "Ambulance",       "rssi": -81, "kanalen": 2,  "var": 10.3, "trend": 0.6,  "snelheid": 75,  "freq": 393.0},
+        {"naam": "Brandweer",       "rssi": -83, "kanalen": 3,  "var": 8.7,  "trend": 0.4,  "snelheid": 55,  "freq": 392.0},
     ]
 
     for vb in voorbeelden:
-        kansen = voorspel_kansen(vb["rssi"], vb["kanalen"], vb["var"], vb["trend"], vb["snelheid"])
-        print(f"\n{vb['naam']}:")
-        for klasse, kans in kansen.items():
-            print(f"  {klasse:<15} {kans:.2%}")
+        p = voorspel_hulpdienst(vb["rssi"], vb["kanalen"], vb["var"], vb["trend"], vb["snelheid"], vb["freq"])
+        print(f"  {vb['naam']:<20} P(hulpdienst) = {p:.4f}")
